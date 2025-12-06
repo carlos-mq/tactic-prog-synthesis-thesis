@@ -12,11 +12,6 @@ Three useful pieces:
 - Type variable classification
 -}
 
-data TypeVar =
-  RigidVar String | -- Rigid Skolem variable; it cannot be anything other than what it is.
-  FlexVar String -- Flexible undetermined variable
-  deriving (Eq, Ord)
-
 -- Helper function to get fresh unification variable names.
 {-
 getNext :: State Int String
@@ -26,34 +21,27 @@ getNext = do
   return ("T" ++ (show nextId))
 -}
 
-
-
-instance Show TypeVar where
-  show tv =
-    case tv of
-      RigidVar s -> s
-      FlexVar s -> s
-
 data Type =
-  Int |
-  String |
-  Boolean |
+  Z |
+  B |
   List Type |
   Function Type Type |
   Product Type Type |
   Union Type Type |
-  TVar TypeVar
+  UVar Int | -- Unification variable; essentially a hole in a type.
+  SkVar String | -- A rigid Skolem variable, to be taken as a 'primitive'.
+  All String  -- An universally quantified variable.
   deriving (Eq)
 
--- Given a type, finds all flexible variables occurring in it.
-fv :: Type -> ST.Set TypeVar
-fv t =
+-- Given a type, finds all unification type variables occurring in it.
+uv :: Type -> ST.Set Int
+uv t =
   case t of
-    List t' -> fv t'
-    Function t1 t2 -> fv t1 `ST.union` fv t2
-    Product t1 t2 -> fv t1 `ST.union` fv t2
-    Union t1 t2 -> fv t1 `ST.union` fv t2
-    TVar (FlexVar t1) -> ST.singleton (FlexVar t1)
+    List t' -> uv t'
+    Function t1 t2 -> uv t1 `ST.union` uv t2
+    Product t1 t2 -> uv t1 `ST.union` uv t2
+    Union t1 t2 -> uv t1 `ST.union` uv t2
+    UVar n -> ST.singleton n
     _ -> ST.empty
 
 {-
@@ -98,29 +86,28 @@ for structural equality.
 isPrimitive :: Type -> Bool
 isPrimitive t =
   case t of
-    Int -> True
-    String -> True
-    Boolean -> True
-    TVar (RigidVar _) -> True
+    Z -> True
+    B -> True
+    SkVar _ -> True
     _ -> False
 
 
 instance Show Type where
   show t =
     case t of
-      Int -> "ℤ"
-      String -> "String"
-      Boolean -> "Bool"
+      Z -> "ℤ"
+      B -> "𝔹"
       List t1 -> "[" ++ show t1 ++ "]"
       Function t1 t2 -> show t1 ++ " → " ++ show t2
       Product t1 t2 -> show t1 ++ " × " ++ show t2
       Union t1 t2 -> show t1 ++ " ⊔ " ++ show t2
-      TVar t1 -> show t1
+      UVar n -> show n
+      SkVar s -> s
+      All s -> s
 
 
 {-
-Zipper-friendly data type for expressions,
-inspired by Huet's original paper.
+Zipper-friendly data type for expressions.
 -}
 
 -- Indents the whole representation by one tab.
@@ -135,18 +122,21 @@ applyText [x] = "(" ++ x ++ ")"
 applyText (x : xs) = x ++ " " ++ applyText xs
 
 data ExpressionData =
-  App |
-  Var String |
-  Ifte |
-  Lambda String Type |
-  Pair |
-  Num Integer |
   Bool Bool |
-  IDHole Int Type |
+  Int Integer |
+  App |
+  Pair |
+  Ifte |
+  Var String Type |
   Let String Type |
   LetRec String Type |
+  Lambda String Type |
+  TypedHole Int Type |
   Program
 
+
+-- We'll always assume that the number of subexpressions is the
+-- proper one.
 data Expression = Expr ExpressionData [Expression]
 
 -- Consider zipper-based pretty printing to make this
@@ -155,7 +145,7 @@ instance Show Expression where
     case exprData of
       App -> applyText $ map show subExps
       Bool b -> show b
-      Num n -> show n
+      Int n -> show n
       Var s -> s
       Ifte ->
         "if (" ++ show (subExps !! 0) ++ ")\n" ++
@@ -166,29 +156,50 @@ instance Show Expression where
         ++ (tab $ show (subExps !! 0))
       Pair ->
         "(" ++ show (subExps !! 0) ++ ", " ++ show (subExps !! 1) ++ ")"
-      IDHole id t ->
-        "(__#" ++ show id ++ " : " ++ show t ++ ")"
+      TypedHole id t ->
+        "(-#" ++ show id ++ " : " ++ show t ++ ")"
       Let s t -> "let (" ++ s ++ " : " ++ show t ++ ") =\n" ++ (tab $ show (subExps !! 0)) ++ "\n"
       LetRec s t -> "letrec (" ++ s ++ " : " ++ show t ++ ") =\n" ++ (tab $ show (subExps !! 0)) ++ "\n"
       Program -> unlines $ map show subExps
 
-data PathChoice = PathChoice {
-  leftSiblings :: [Expression],
-  parentData :: ExpressionData,
-  rightSiblings :: [Expression]
-}
-type Location = [PathChoice]
+{-
+FUNCTIONS ON TYPES
+-}
 
-data ExprZipper = Zipper Expression Location
+-- Turns all universally quantified types into unification types,
+-- starting at index n [TO-DO]
+{-
+unif :: Int -> Type -> (Int, Type)
+u (List t) = List (u t)
+u (Function t1 t2) = Function (u t1) (u t2)
+u (Product t1 t2) = Product (u t1) (u t2)
+u (Union t1 t2) = Union (u t1) (u t2)
+u (All t) = UVar t
+u t = t
+-}
 
--- Just one zipper that moves from one hole to the other.
+-- Turns all universally quantified types into rigid Skolem types
+rigid :: Type -> Type
+rigid (List t) = List (rigid t)
+rigid (Function t1 t2) = Function (rigid t1) (rigid t2)
+rigid (Product t1 t2) = Product (rigid t1) (rigid t2)
+rigid (Union t1 t2) = Union (rigid t1) (rigid t2)
+rigid (All t) = SkVar t
+rigid t = t
 
 
+
+
+{-
+======================================================
+|                   UNIFICATION                      |
+======================================================
+-}
 
 -- Let's begin by assuming no type polymorphism.
 
 type Context = MP.Map String Type
-type Substitution = MP.Map TypeVar Type
+type Substitution = MP.Map Type Type
 type ConstraintSet = [(Type, Type)]
 
 emptySubstitution :: Substitution
@@ -275,5 +286,3 @@ unify c =
               struct2 <- compoundType t2
               zipped <- zipConstraints struct1 struct2
               unify $ zipped ++ cs
-
-

@@ -188,7 +188,13 @@ rigid (All t) = SkVar t
 rigid t = t
 
 
+-- CONTEXTS
 
+type Context = MP.Map String Type
+
+-- Obtains the global context induced by a list of expressions.
+getGlobalContext :: [Expression] -> Context
+getGlobalContext = foldr ()
 
 {-
 ======================================================
@@ -198,7 +204,6 @@ rigid t = t
 
 -- Let's begin by assuming no type polymorphism.
 
-type Context = MP.Map String Type
 type Substitution = MP.Map Type Type
 type ConstraintSet = [(Type, Type)]
 

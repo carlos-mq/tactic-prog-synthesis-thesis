@@ -31,6 +31,41 @@ data ExprZipper = ExprZipper {
   location :: Location
 }
 
+-- Zipper Auxiliaries
+
+atRoot :: ExprZipper -> Bool
+atRoot z = null (location z)
+
+atLeaf :: ExprZipper -> Bool
+atLeaf z =
+  case subexpr z of
+    Expr _ [] -> True
+    _ -> False
+
+atTopLevel :: ExprZipper -> Bool
+atTopLevel z =
+  case subexpr z of
+    Expr (Let _ _) _ -> True
+    Expr (LetRec _ _) -> True
+    _ -> False
+
+atLambda :: ExprZipper -> Bool
+atLambda z =
+  case subexpr z of
+    Expr (Lambda _ _) _ -> True
+    _ -> False
+
+-- If pointing at a variable, top-level, or lambda, obtains its data.
+getData :: ExprZipper -> Maybe (String, Type)
+getData z =
+  case subexpr z of
+    Expr (Var s t) _ -> Just (s, t)
+    Expr (Let s t) _ -> Just (s, t)
+    Expr (LetRec s t) _ -> Just (s, t)
+    Expr (Lambda s t) _ -> Just (s, t)
+    _ -> Nothing
+
+
 instance TreeZipper ExprZipper ExpressionData where
   goUp z =
     case location z of
@@ -94,6 +129,40 @@ instance Show ExprZipper where
       Nothing -> show (subexpr z)
       Just z' -> show z'
 
+{-
+======================================================
+|                CONTEXT UPDATING                    |
+======================================================
+Ideas:
+1. Try to always keep track of a global context and an
+_usable_ global context.
+2. In particular, the global context is only changed by
+definitions;
+3. On the other hand, the _usable_ global context will consist of
+  the global context minus the current top-level.
+4. Therefore, it suffices to have an unchangeable global context
+(only changeable by definitions) and a tracker of the current top-level.
+
+The top-level:
+Only changes with goLeft or goRight whenever the parent
+is Program. In all other cases it doesn't change.
+-}
+
+-- If we are positioned at a top-level, gets its name.
+getTopLevelName :: HoleZipper -> Maybe String
+getTopLevelName hz
+  | atTopLevel (zipper hz) =
+    case getData (zipper hz) of
+      Just (name, _) -> name
+      _ -> Nothing
+  | otherwise = Nothing 
+
+-- If we are positioned at a lambda, gets its data.
+getLambdaName :: HoleZipper -> Maybe (String, Type)
+getLambdaName hz
+  | atLambda (zipper hz) = getData (zipper hz)
+  | otherwise = Nothing
+
 
 {-
 ======================================================
@@ -108,17 +177,9 @@ the HoleZipper tracks the top of the program.
 data HoleZipper = HoleZipper {
   zipper :: ExprZipper,
   global :: Context,
+  topLevel :: String,
   local :: Context
 }
-
-{-
-Both get a piece of expression data, and if it
-represents an abstraction (either top-level or lambda),
-adds to the context or removes accordingly.
--}
-addToContext :: ExpressionData -> Context -> Context
-addToContext d =
-  case d of
   
 -- WE NEED: Solidification of Types!
 
@@ -149,5 +210,6 @@ trackHole ctxt ez =
     }
     Expr (Lambda )
 
---
+-- In each step until the top, try trackHole again.
+-- If the top is reached, stay there.
 nextHole :: HoleZipper -> HoleZipper

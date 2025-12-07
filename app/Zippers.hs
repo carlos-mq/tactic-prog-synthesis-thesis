@@ -14,9 +14,7 @@ class TreeZipper z d where
   goUp :: z -> Maybe z
   goDown :: z -> Maybe z
   goLeft :: z -> Maybe z
-  goDown :: z -> Maybe z
-  -- Gets the data stored at the current 'node'
-  getData :: z -> d
+  goRight :: z -> Maybe z
 
 data PathChoice = PathChoice {
   leftSiblings :: [Expression],
@@ -129,6 +127,25 @@ instance Show ExprZipper where
       Nothing -> show (subexpr z)
       Just z' -> show z'
 
+
+
+{-
+======================================================
+|                HOLE-SPECIFIC ZIPPERS               |
+======================================================
+-}
+
+{-
+If there are no holes to track, holeTracked is Nothing and
+the HoleZipper tracks the top of the program.
+-}
+data HoleZipper = HoleZipper {
+  zipper :: ExprZipper,
+  global :: Context,
+  topLevel :: Maybe String,
+  local :: Context
+}
+
 {-
 ======================================================
 |                CONTEXT UPDATING                    |
@@ -148,58 +165,94 @@ Only changes with goLeft or goRight whenever the parent
 is Program. In all other cases it doesn't change.
 -}
 
--- If we are positioned at a top-level, gets its name.
-getTopLevelName :: HoleZipper -> Maybe String
-getTopLevelName hz
-  | atTopLevel (zipper hz) =
-    case getData (zipper hz) of
+-- If we are positioned at a top-level, gets its name;
+-- otherwise, returns Nothing
+getTopLevelName :: ExprZipper -> Maybe String
+getTopLevelName zpr
+  | atTopLevel zpr =
+    case getData zpr of
       Just (name, _) -> name
       _ -> Nothing
-  | otherwise = Nothing 
-
--- If we are positioned at a lambda, gets its data.
-getLambdaName :: HoleZipper -> Maybe (String, Type)
-getLambdaName hz
-  | atLambda (zipper hz) = getData (zipper hz)
   | otherwise = Nothing
 
+-- If we are positioned at a lambda, gets its data.
+getLambdaName :: ExprZipper -> Maybe (String, Type)
+getLambdaName zpr
+  | atLambda zpr = getData zpr
+  | otherwise = Nothing
 
-{-
-======================================================
-|                HOLE-SPECIFIC ZIPPERS               |
-======================================================
--}
+-- Given a current top-level and an updated zipper,
+-- obtains the corresponding updated top-level.
+updateTopLevel :: Maybe String -> ExprZipper -> Maybe String
+updateTopLevel currentTpLvl zpr =
+  if atRoot zpr
+    then Nothing
+    else
+      case getTopLevelName zpr of
+        Nothing -> currentTpLvl
+        Just newTpLvl -> Just newTpLvl
 
-{-
-If there are no holes to track, holeTracked is Nothing and
-the HoleZipper tracks the top of the program.
--}
-data HoleZipper = HoleZipper {
-  zipper :: ExprZipper,
-  global :: Context,
-  topLevel :: String,
-  local :: Context
-}
-  
--- WE NEED: Solidification of Types!
+
 
 instance TreeZipper HoleZipper where
-  goLeft HoleZipper{zipper = z, context = ctxt } = do
-    z' <- goLeft z
-    return HoleZipper{zipper = z', context = ctxt }
-  goRight HoleZipper{zipper = z, context = ctxt } = do
-    z' <- goRight z
-    return HoleZipper{zipper = z', context = ctxt }
-  goUp HoleZipper{zipper = z, context = ctxt } = do
-    z' <- goUp z
-    return HoleZipper{zipper = z', context = ctxt }
-  goDown HoleZipper{zipper = z, context = ctxt } = do
-    z' <- goDown z
-    return HoleZipper{zipper = z', context = ctxt }
+  goUp hz = do
+    z' <- goUp (zipper hz)
+    return HoleZipper {
+      zipper = z',
+      global = global hz,
+      topLevel = updateTopLevel (topLevel hz) z',
+      local =
+        case getLambdaName (zipper hz) of
+          Nothing -> local hz
+          Just (name, t) -> delete name (local hz)
+    }
+  goDown hz = do
+    z' <- goDown (zipper hz)
+    return HoleZipper {
+      zipper = z',
+      global = global hz,
+      topLevel = updateTopLevel (topLevel hz) z',
+      local = 
+        case getLambdaName z' of
+          Nothing -> local hz
+          Just (name, t) -> insert name t (local hz)
+    }
+  goLeft hz = do
+    z' <- goLeft (zipper hz)
+    return HoleZipper {
+      zipper = z',
+      global = global hz,
+      topLevel = updateTopLevel (topLevel hz) z',
+      local =
+        case (getLambdaName (zipper hz), getLambdaName z') of
+          (Nothing, Nothing) -> local hz
+          (Nothing, Just (name, t)) -> insert name t (local hz)
+          (Just (name, t), Nothing) -> delete name (local hz)
+          (Just (name, t), Just (name', t')) ->
+            insert name' t' (delete name (local hz))
+    }
+  goRight hz = do
+    z' <- goRight (zipper hz)
+    return HoleZipper {
+      zipper = z',
+      global = global hz,
+      topLevel = updateTopLevel (topLevel hz) z',
+      local = 
+        case (getLambdaName (zipper hz), getLambdaName z') of
+          (Nothing, Nothing) -> local hz
+          (Nothing, Just (name, t)) -> insert name t (local hz)
+          (Just (name, t), Nothing) -> delete name (local hz)
+          (Just (name, t), Just (name', t')) ->
+            insert name' t' (delete name (local hz))
+    }
 
+-- CONTEXT MAINTENANCE DONE!
 
+-- For now, let's move from hole to hole manually.
 
--- Attempts to find a hole below the zipper to track.
+{-
+Attempts to find the leftmost hole below the current pointer.
+
 trackHole :: Context -> ExprZipper -> Maybe HoleZipper 
 trackHole ctxt ez =
   case subexpr ez of
@@ -213,3 +266,4 @@ trackHole ctxt ez =
 -- In each step until the top, try trackHole again.
 -- If the top is reached, stay there.
 nextHole :: HoleZipper -> HoleZipper
+-}

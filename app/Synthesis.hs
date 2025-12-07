@@ -2,8 +2,7 @@ module Synthesis where
 
 import AST
 
--- Idea: have a general ExprZipper (for the atomic steps),
--- and a specific HoleZipper that we're keeping track of.
+-- Idea: a Tactic Tempalte 
 
 data SynthState = SynthState {
   zipper :: HoleZipper
